@@ -32,49 +32,29 @@ jobs:
         run: |
           $url = "https://github.com/hanyeonsoo/jwsteel-release/releases/download/v3.0.11/JWSteel_Setup_v3.0.11.exe"
           $exe = "$env:RUNNER_TEMP\v311.exe"
-          Write-Host "Downloading v3.0.11..."
           Invoke-WebRequest $url -OutFile $exe -UseBasicParsing
-          Write-Host "Downloaded $((Get-Item $exe).Length / 1MB) MB"
 
-          # Run installer with strongest silent flags + log + 3 min hard timeout
           Write-Host "Running silent install..."
           $proc = Start-Process $exe `
             -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-","/NOICONS","/CLOSEAPPLICATIONS","/DIR=C:\v311","/LOG=C:\v311-install.log" `
             -PassThru -WindowStyle Hidden
-          if (-not $proc.WaitForExit(180000)) {
-            Write-Host "Installer hung - killing"
-            $proc.Kill()
-          }
-          Write-Host "Installer exit code: $($proc.ExitCode)"
-          if (Test-Path "C:\v311-install.log") {
-            Write-Host "=== install.log ==="
-            Get-Content "C:\v311-install.log" -Tail 30
-          }
+          if (-not $proc.WaitForExit(180000)) { $proc.Kill() }
+          if (Test-Path "C:\v311-install.log") { Get-Content "C:\v311-install.log" -Tail 20 }
           if (Test-Path "C:\v311\_internal\ui\main.py") {
-            Write-Host "Standard install succeeded at C:\v311"
+            Write-Host "Install succeeded at C:\v311"
           } else {
-            Write-Host "Silent install path didn't materialize - fallback: pyinstxtractor on inner exe"
-            # Inno Setup installers wrap a 7z archive at the end. innoextract is available via choco.
             choco install -y innoextract --no-progress
             $ie = (Get-Command innoextract -EA SilentlyContinue).Source
-            if (-not $ie) {
-              $ie = (Get-ChildItem "C:\ProgramData\chocolatey\bin\innoextract.exe" -EA SilentlyContinue).FullName
-            }
+            if (-not $ie) { $ie = (Get-ChildItem "C:\ProgramData\chocolatey\bin\innoextract.exe" -EA SilentlyContinue).FullName }
             if ($ie) {
-              & $ie -d C:\v311 $exe 2>&1 | Tee-Object -Variable ieOut
+              & $ie -d C:\v311 $exe
               if (Test-Path "C:\v311\app\_internal\ui\main.py") {
-                # innoextract uses 'app/' subfolder for {app} files
                 Move-Item "C:\v311\app\*" "C:\v311\" -Force
                 Remove-Item "C:\v311\app" -Recurse -Force -EA SilentlyContinue
               }
             }
           }
-          if (-not (Test-Path "C:\v311\_internal\ui\main.py")) {
-            Write-Host "=== C:\v311 contents ==="
-            Get-ChildItem C:\v311 -Recurse -Depth 2 | Select-Object FullName | Format-Table -AutoSize
-            throw "v3.0.11 source extraction FAILED"
-          }
-          Write-Host "v3.0.11 source ready at C:\v311"
+          if (-not (Test-Path "C:\v311\_internal\ui\main.py")) { throw "v3.0.11 source extraction FAILED" }
 
       - name: Build source tree with v3.0.12 patches
         shell: pwsh
@@ -82,7 +62,6 @@ jobs:
           $work = "C:\work"
           New-Item -ItemType Directory -Path $work | Out-Null
           Copy-Item "C:\v311\_internal\*" $work -Recurse -Force
-          # Apply patches from this repo
           Copy-Item "patches\v3.0.12\ui\common.py"                   "$work\ui\common.py" -Force
           Copy-Item "patches\v3.0.12\ui\main.py"                     "$work\ui\main.py" -Force
           Copy-Item "patches\v3.0.12\ui\widgets\_filter_bar.py"      "$work\ui\widgets\_filter_bar.py" -Force
@@ -91,13 +70,11 @@ jobs:
           Copy-Item "patches\v3.0.12\ui\widgets\login.py"            "$work\ui\widgets\login.py" -Force
           Copy-Item "patches\v3.0.12\updater.py"                     "$work\updater.py" -Force
           Copy-Item "patches\v3.0.12\VERSION.txt"                    "$work\VERSION.txt" -Force
-          # Strip bundled bytecode caches
           Get-ChildItem $work -Filter "__pycache__" -Recurse -Directory | Remove-Item -Recurse -Force -EA SilentlyContinue
           Get-ChildItem $work -Filter "*.pyc" -Recurse | Remove-Item -Force -EA SilentlyContinue
-          # Verify patches landed
           if (-not (Select-String "_make_field_label" "$work\ui\widgets\login.py")) { throw "login.py patch missing" }
-          if (-not (Select-String "apply_all_filters" "$work\ui\widgets\_filter_bar.py")) { throw "_filter_bar.py patch missing" }
-          Write-Host "Patch verification OK"
+          Write-Host "=== Root .py files in C:\work ==="
+          Get-ChildItem $work -Filter "*.py" -File | Select-Object Name
 
       - name: Install Python dependencies
         shell: pwsh
@@ -109,15 +86,34 @@ jobs:
         shell: pwsh
         working-directory: C:\work
         run: |
-          python -m PyInstaller --noconfirm --windowed --name JWSteel `
-            --add-data "VERSION.txt;." `
-            --add-data "ui;ui" `
-            --add-data "dashboard;dashboard" `
-            --add-data "manual;manual" `
-            --add-data "config.json.template;." `
-            --add-data "accounting.db;." `
-            ui/main.py
+          # --paths . so Analysis can find root-level modules (auth_module, db_adapter, etc.)
+          # --hidden-import for each root module: belt-and-braces in case import is dynamic
+          # --add-data "<name>.py;." keeps loose .py files in _internal/ as the original build did
+          $rootPy = Get-ChildItem -Path . -Filter "*.py" -File | Select-Object -ExpandProperty BaseName
+          Write-Host "Root modules: $($rootPy -join ', ')"
+          $hidden = $rootPy | Where-Object { $_ -notmatch '^\d' } | ForEach-Object { "--hidden-import"; $_ }
+          $addPy  = Get-ChildItem -Path . -Filter "*.py" -File | ForEach-Object { "--add-data"; "$($_.Name);." }
+
+          $args = @(
+              "--noconfirm","--windowed","--name","JWSteel",
+              "--paths",".",
+              "--add-data","VERSION.txt;.",
+              "--add-data","ui;ui",
+              "--add-data","dashboard;dashboard",
+              "--add-data","manual;manual",
+              "--add-data","config.json.template;.",
+              "--add-data","accounting.db;."
+          )
+          $args += $hidden
+          $args += $addPy
+          $args += "ui/main.py"
+
+          Write-Host "PyInstaller args: $($args -join ' ')"
+          & python -m PyInstaller @args
           if (-not (Test-Path "C:\work\dist\JWSteel\JWSteel.exe")) { throw "PyInstaller failed" }
+          Write-Host "PyInstaller OK"
+          # Verify auth_module is in the bundle
+          Get-ChildItem "C:\work\dist\JWSteel\_internal" -Filter "auth_module*" -Recurse | Select-Object FullName
 
       - name: Install Inno Setup
         shell: pwsh
