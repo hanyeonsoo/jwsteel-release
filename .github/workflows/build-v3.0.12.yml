@@ -26,14 +26,55 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Download v3.0.11 installer (source baseline)
+      - name: Download v3.0.11 installer and extract sources
         shell: pwsh
+        timeout-minutes: 8
         run: |
           $url = "https://github.com/hanyeonsoo/jwsteel-release/releases/download/v3.0.11/JWSteel_Setup_v3.0.11.exe"
-          Invoke-WebRequest $url -OutFile "$env:RUNNER_TEMP\v311.exe"
-          Start-Process "$env:RUNNER_TEMP\v311.exe" -ArgumentList "/SILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=C:\v311" -Wait
-          if (-not (Test-Path "C:\v311\_internal\ui\main.py")) { throw "v3.0.11 extract failed" }
-          Write-Host "v3.0.11 source extracted to C:\v311"
+          $exe = "$env:RUNNER_TEMP\v311.exe"
+          Write-Host "Downloading v3.0.11..."
+          Invoke-WebRequest $url -OutFile $exe -UseBasicParsing
+          Write-Host "Downloaded $((Get-Item $exe).Length / 1MB) MB"
+
+          # Run installer with strongest silent flags + log + 3 min hard timeout
+          Write-Host "Running silent install..."
+          $proc = Start-Process $exe `
+            -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-","/NOICONS","/CLOSEAPPLICATIONS","/DIR=C:\v311","/LOG=C:\v311-install.log" `
+            -PassThru -WindowStyle Hidden
+          if (-not $proc.WaitForExit(180000)) {
+            Write-Host "Installer hung - killing"
+            $proc.Kill()
+          }
+          Write-Host "Installer exit code: $($proc.ExitCode)"
+          if (Test-Path "C:\v311-install.log") {
+            Write-Host "=== install.log ==="
+            Get-Content "C:\v311-install.log" -Tail 30
+          }
+          if (Test-Path "C:\v311\_internal\ui\main.py") {
+            Write-Host "Standard install succeeded at C:\v311"
+          } else {
+            Write-Host "Silent install path didn't materialize - fallback: pyinstxtractor on inner exe"
+            # Inno Setup installers wrap a 7z archive at the end. innoextract is available via choco.
+            choco install -y innoextract --no-progress
+            $ie = (Get-Command innoextract -EA SilentlyContinue).Source
+            if (-not $ie) {
+              $ie = (Get-ChildItem "C:\ProgramData\chocolatey\bin\innoextract.exe" -EA SilentlyContinue).FullName
+            }
+            if ($ie) {
+              & $ie -d C:\v311 $exe 2>&1 | Tee-Object -Variable ieOut
+              if (Test-Path "C:\v311\app\_internal\ui\main.py") {
+                # innoextract uses 'app/' subfolder for {app} files
+                Move-Item "C:\v311\app\*" "C:\v311\" -Force
+                Remove-Item "C:\v311\app" -Recurse -Force -EA SilentlyContinue
+              }
+            }
+          }
+          if (-not (Test-Path "C:\v311\_internal\ui\main.py")) {
+            Write-Host "=== C:\v311 contents ==="
+            Get-ChildItem C:\v311 -Recurse -Depth 2 | Select-Object FullName | Format-Table -AutoSize
+            throw "v3.0.11 source extraction FAILED"
+          }
+          Write-Host "v3.0.11 source ready at C:\v311"
 
       - name: Build source tree with v3.0.12 patches
         shell: pwsh
@@ -50,10 +91,9 @@ jobs:
           Copy-Item "patches\v3.0.12\ui\widgets\login.py"            "$work\ui\widgets\login.py" -Force
           Copy-Item "patches\v3.0.12\updater.py"                     "$work\updater.py" -Force
           Copy-Item "patches\v3.0.12\VERSION.txt"                    "$work\VERSION.txt" -Force
-          # Strip any bundled bytecode cache
+          # Strip bundled bytecode caches
           Get-ChildItem $work -Filter "__pycache__" -Recurse -Directory | Remove-Item -Recurse -Force -EA SilentlyContinue
           Get-ChildItem $work -Filter "*.pyc" -Recurse | Remove-Item -Force -EA SilentlyContinue
-          Write-Host "Patches applied to $work"
           # Verify patches landed
           if (-not (Select-String "_make_field_label" "$work\ui\widgets\login.py")) { throw "login.py patch missing" }
           if (-not (Select-String "apply_all_filters" "$work\ui\widgets\_filter_bar.py")) { throw "_filter_bar.py patch missing" }
@@ -78,7 +118,6 @@ jobs:
             --add-data "accounting.db;." `
             ui/main.py
           if (-not (Test-Path "C:\work\dist\JWSteel\JWSteel.exe")) { throw "PyInstaller failed" }
-          Write-Host "PyInstaller build OK"
 
       - name: Install Inno Setup
         shell: pwsh
@@ -92,12 +131,11 @@ jobs:
         shell: pwsh
         working-directory: C:\work
         run: |
-          # Copy BOM-encoded installer.iss to build dir
           Copy-Item "${{ github.workspace }}\patches\v3.0.12\build\installer.iss" "C:\work\installer.iss" -Force
           & "$env:ISCC" "C:\work\installer.iss"
           if (-not (Test-Path "C:\work\output\JWSteel_Setup_v3.0.12.exe")) { throw "Inno Setup failed" }
           $info = Get-Item "C:\work\output\JWSteel_Setup_v3.0.12.exe"
-          Write-Host "Installer built: $($info.FullName) ($([math]::Round($info.Length / 1MB, 1)) MB)"
+          Write-Host "Installer built: $($info.Name) ($([math]::Round($info.Length / 1MB, 1)) MB)"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
