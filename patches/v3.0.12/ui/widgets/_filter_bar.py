@@ -312,7 +312,22 @@ class InlineFilterBar(QWidget):
         AND 결합된 통합 필터를 적용해 두 필터가 서로 덮어쓰지 않게 한다.
 
         성능 최적화: 활성 필터만 모아서 한 번만 비교, .lower() 호출도 최소화.
+        예외 처리 보강: PyQt 객체 수명 이슈로 인한 크래시 방지.
         """
+        try:
+            self._apply_unsafe()
+        except RuntimeError:
+            # QObject 가 이미 삭제됨 (테이블 재구성 중 등)
+            pass
+        except Exception as e:
+            try:
+                print(f"[filter] apply error: {e}")
+            except Exception:
+                pass
+
+    def _apply_unsafe(self):
+        if not self.table or not self.inputs:
+            return
         if hasattr(self.table, 'column_filters'):
             apply_all_filters(self.table)
             return
@@ -320,7 +335,10 @@ class InlineFilterBar(QWidget):
         # 활성 필터만 미리 추출 (값이 비어있지 않은 컬럼)
         active = []  # [(col, op, fv_lower, fv_number_or_None)]
         for col, inp in self.inputs.items():
-            fv = inp.text().strip()
+            try:
+                fv = inp.text().strip()
+            except RuntimeError:
+                continue
             if not fv:
                 continue
             op = self.operators.get(col, "contains")
@@ -328,47 +346,43 @@ class InlineFilterBar(QWidget):
             fv_num = _to_number(fv) if op in ("gt", "gte", "lt", "lte") else None
             active.append((col, op, fv_lower, fv_num))
 
+        row_count = self.table.rowCount()
+
         if not active:
-            for r in range(self.table.rowCount()):
+            for r in range(row_count):
                 self.table.setRowHidden(r, False)
             return
 
-        # UI 갱신 차단으로 깜빡임/속도 개선
-        self.table.setUpdatesEnabled(False)
-        try:
-            for r in range(self.table.rowCount()):
-                visible = True
-                for col, op, fv_lower, fv_num in active:
-                    item = self.table.item(r, col)
-                    cell = item.text() if item else ""
-                    cell_l = cell.lower().strip()
-                    if op == "contains":
-                        ok = fv_lower in cell_l
-                    elif op == "not_contains":
-                        ok = fv_lower not in cell_l
-                    elif op == "eq":
-                        ok = cell_l == fv_lower
-                    elif op == "ne":
-                        ok = cell_l != fv_lower
-                    elif op == "starts":
-                        ok = cell_l.startswith(fv_lower)
-                    elif op == "ends":
-                        ok = cell_l.endswith(fv_lower)
-                    elif op in ("gt", "gte", "lt", "lte") and fv_num is not None:
-                        c = _to_number(cell)
-                        if c is None:
-                            ok = False
-                        else:
-                            ok = {"gt": c > fv_num, "gte": c >= fv_num,
-                                  "lt": c < fv_num, "lte": c <= fv_num}[op]
+        for r in range(row_count):
+            visible = True
+            for col, op, fv_lower, fv_num in active:
+                item = self.table.item(r, col)
+                cell_l = (item.text() if item else "").lower().strip()
+                if op == "contains":
+                    ok = fv_lower in cell_l
+                elif op == "not_contains":
+                    ok = fv_lower not in cell_l
+                elif op == "eq":
+                    ok = cell_l == fv_lower
+                elif op == "ne":
+                    ok = cell_l != fv_lower
+                elif op == "starts":
+                    ok = cell_l.startswith(fv_lower)
+                elif op == "ends":
+                    ok = cell_l.endswith(fv_lower)
+                elif op in ("gt", "gte", "lt", "lte") and fv_num is not None:
+                    c = _to_number(cell_l)
+                    if c is None:
+                        ok = False
                     else:
-                        ok = True
-                    if not ok:
-                        visible = False
-                        break
-                self.table.setRowHidden(r, not visible)
-        finally:
-            self.table.setUpdatesEnabled(True)
+                        ok = {"gt": c > fv_num, "gte": c >= fv_num,
+                              "lt": c < fv_num, "lte": c <= fv_num}[op]
+                else:
+                    ok = True
+                if not ok:
+                    visible = False
+                    break
+            self.table.setRowHidden(r, not visible)
 
 
 def _clean_header_text(text: str) -> str:
@@ -556,19 +570,37 @@ def apply_all_filters(table: QTableWidget):
     inventory.py / inventory_picker.py 처럼 두 필터를 함께 쓰는 화면에서 사용.
 
     성능: 활성 필터만 미리 모으고 .lower() 1회만 호출하여 큰 테이블에서도 빠르게.
+    안전: RuntimeError (QObject 수명 종료) 등 무시.
     """
+    try:
+        _apply_all_unsafe(table)
+    except RuntimeError:
+        pass
+    except Exception as e:
+        try:
+            print(f"[filter] apply_all error: {e}")
+        except Exception:
+            pass
+
+
+def _apply_all_unsafe(table: QTableWidget):
     column_filters = getattr(table, 'column_filters', None) or {}
     bar = getattr(table, '_inline_filter_bar', None)
 
     # 팝업/인라인 활성 필터를 동일 구조로 정규화
     active = []  # [(col, op, fv_lower, fv_num)]
     for col, (op, val) in column_filters.items():
+        if op == "reset":
+            continue
         fv = (val or "").lower().strip()
         fn = _to_number(fv) if op in ("gt", "gte", "lt", "lte") else None
         active.append((col, op, fv, fn))
     if bar is not None:
         for col, inp in bar.inputs.items():
-            fv_raw = inp.text().strip()
+            try:
+                fv_raw = inp.text().strip()
+            except RuntimeError:
+                continue
             if not fv_raw:
                 continue
             op = bar.operators.get(col, "contains")
@@ -576,47 +608,43 @@ def apply_all_filters(table: QTableWidget):
             fn = _to_number(fv) if op in ("gt", "gte", "lt", "lte") else None
             active.append((col, op, fv, fn))
 
+    row_count = table.rowCount()
+
     if not active:
-        for r in range(table.rowCount()):
+        for r in range(row_count):
             table.setRowHidden(r, False)
         return
 
-    table.setUpdatesEnabled(False)
-    try:
-        for r in range(table.rowCount()):
-            visible = True
-            for col, op, fv, fn in active:
-                if op == "reset":
-                    continue
-                it = table.item(r, col)
-                cell = (it.text() if it else "").lower().strip()
-                if op == "contains":
-                    ok = fv in cell
-                elif op == "not_contains":
-                    ok = fv not in cell
-                elif op == "eq":
-                    ok = cell == fv
-                elif op == "ne":
-                    ok = cell != fv
-                elif op == "starts":
-                    ok = cell.startswith(fv)
-                elif op == "ends":
-                    ok = cell.endswith(fv)
-                elif op in ("gt", "gte", "lt", "lte") and fn is not None:
-                    c = _to_number(cell)
-                    if c is None:
-                        ok = False
-                    else:
-                        ok = {"gt": c > fn, "gte": c >= fn,
-                              "lt": c < fn, "lte": c <= fn}[op]
+    for r in range(row_count):
+        visible = True
+        for col, op, fv, fn in active:
+            it = table.item(r, col)
+            cell = (it.text() if it else "").lower().strip()
+            if op == "contains":
+                ok = fv in cell
+            elif op == "not_contains":
+                ok = fv not in cell
+            elif op == "eq":
+                ok = cell == fv
+            elif op == "ne":
+                ok = cell != fv
+            elif op == "starts":
+                ok = cell.startswith(fv)
+            elif op == "ends":
+                ok = cell.endswith(fv)
+            elif op in ("gt", "gte", "lt", "lte") and fn is not None:
+                c = _to_number(cell)
+                if c is None:
+                    ok = False
                 else:
-                    ok = True
-                if not ok:
-                    visible = False
-                    break
-            table.setRowHidden(r, not visible)
-    finally:
-        table.setUpdatesEnabled(True)
+                    ok = {"gt": c > fn, "gte": c >= fn,
+                          "lt": c < fn, "lte": c <= fn}[op]
+            else:
+                ok = True
+            if not ok:
+                visible = False
+                break
+        table.setRowHidden(r, not visible)
 
 
 def auto_install_filters(widget):
