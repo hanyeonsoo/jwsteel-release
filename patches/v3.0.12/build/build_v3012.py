@@ -62,6 +62,25 @@ def main() -> int:
         "--hidden-import", "PyQt6.QtWebEngineCore",
         "--hidden-import", "PyQt6.QtWebEngineWidgets",
         "--hidden-import", "PyQt6.QtWebChannel",
+        # dashboard/server.py 가 동적 로드(importlib)되므로 정적 분석으로 잡히지 않음
+        # → fastapi/uvicorn 및 의존 모듈을 명시 collect
+        "--collect-all", "fastapi",
+        "--collect-all", "uvicorn",
+        "--collect-all", "starlette",
+        "--collect-all", "pydantic",
+        "--collect-submodules", "anyio",
+        "--collect-submodules", "sniffio",
+        "--hidden-import", "fastapi",
+        "--hidden-import", "uvicorn",
+        "--hidden-import", "uvicorn.lifespan.on",
+        "--hidden-import", "uvicorn.lifespan.off",
+        "--hidden-import", "uvicorn.protocols.http.h11_impl",
+        "--hidden-import", "uvicorn.protocols.http.auto",
+        "--hidden-import", "uvicorn.protocols.websockets.auto",
+        "--hidden-import", "uvicorn.protocols.websockets.websockets_impl",
+        "--hidden-import", "uvicorn.loops.auto",
+        "--hidden-import", "uvicorn.loops.asyncio",
+        "--hidden-import", "h11",
     ]
     for d in add_data:
         args += ["--add-data", d]
