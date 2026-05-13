@@ -7,9 +7,26 @@ finds them too).
 """
 import glob
 import os
+import subprocess
 import sys
 
-import PyInstaller.__main__
+
+def _ensure(pkg: str, import_name: str | None = None) -> None:
+    """Make sure a runtime dep is installed before PyInstaller collects it."""
+    name = import_name or pkg.replace("-", "_")
+    try:
+        __import__(name)
+    except ImportError:
+        print(f"[build] installing missing dep: {pkg}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+
+
+# python-multipart is needed by FastAPI's UploadFile route in dashboard/server.py.
+# The workflow's pip install line doesn't include it (and we can't update the
+# workflow file without `workflow` PAT scope), so install it here.
+_ensure("python-multipart", "multipart")
+
+import PyInstaller.__main__  # noqa: E402
 
 
 def main() -> int:
@@ -68,10 +85,14 @@ def main() -> int:
         "--collect-all", "uvicorn",
         "--collect-all", "starlette",
         "--collect-all", "pydantic",
+        "--collect-all", "multipart",
+        "--collect-all", "python_multipart",
         "--collect-submodules", "anyio",
         "--collect-submodules", "sniffio",
         "--hidden-import", "fastapi",
         "--hidden-import", "uvicorn",
+        "--hidden-import", "multipart",
+        "--hidden-import", "python_multipart",
         "--hidden-import", "uvicorn.lifespan.on",
         "--hidden-import", "uvicorn.lifespan.off",
         "--hidden-import", "uvicorn.protocols.http.h11_impl",
