@@ -244,17 +244,19 @@ class InlineFilterBar(QWidget):
             self.inputs[c] = inp
             self.operators[c] = "contains"
 
-    def _schedule_apply(self):
-        """타이핑할 때마다 즉시 필터링 대신 200ms 디바운스 적용."""
-        self._debounce.start()
-
         hdr = table.horizontalHeader()
         hdr.sectionResized.connect(self._sync)
         hdr.sectionMoved.connect(self._sync)
         table.horizontalScrollBar().valueChanged.connect(self._sync)
-        # 처음 1회 + 다음 이벤트 루프에서 한 번 더 (geometry 확정 후)
         QTimer.singleShot(0, self._sync)
         QTimer.singleShot(100, self._sync)
+
+    def _schedule_apply(self):
+        """타이핑할 때마다 즉시 필터링 대신 200ms 디바운스 적용."""
+        try:
+            self._debounce.start()
+        except RuntimeError:
+            pass
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
