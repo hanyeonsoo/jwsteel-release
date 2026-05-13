@@ -1,0 +1,139 @@
+# JWSteel Inno Setup 빌드 워크플로우 템플릿
+#
+# 사용법:
+#   1. 소스 저장소(예: hanyeonsoo/jwsteel-source) 에 이 파일을
+#      .github/workflows/build-installer.yml 로 복사
+#   2. Secrets 설정 (Settings → Secrets and variables → Actions):
+#        - GH_RELEASE_TOKEN: hanyeonsoo/jwsteel-release 에 릴리스 업로드 권한 PAT
+#                            (선택: 자동 업로드 안 할 거면 불필요)
+#   3. 브랜치 push 또는 Actions 탭 → "Run workflow" 로 수동 실행
+#
+# 출력:
+#   - artifact: JWSteel_Setup_v<version>.exe  (Actions 페이지에서 다운로드)
+#   - 태그 v* push 시 jwsteel-release 에 자동 릴리스 (옵션, 마지막 job)
+
+name: Build JWSteel Installer
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'release/**'
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_to_jwsteel_release:
+        description: '빌드 후 jwsteel-release 에 릴리스 자동 생성'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION.txt -Raw).Trim()
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+          echo "Building v$v"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          # requirements.txt 가 있으면 사용
+          if (Test-Path requirements.txt) {
+            pip install -r requirements.txt
+          } else {
+            # 폴백: v3.0.11 실측 의존성
+            pip install pyinstaller PyQt6 pandas numpy openpyxl xlrd `
+                        supabase psycopg2-binary requests pydantic pillow `
+                        reportlab
+          }
+
+      - name: Build PyInstaller bundle
+        shell: pwsh
+        run: |
+          # build_exe.py 가 있으면 사용 (사용자 빌드 스크립트)
+          if (Test-Path build_exe.py) {
+            python build_exe.py
+          } else {
+            # 폴백 직접 호출
+            pyinstaller --noconfirm --windowed `
+              --name JWSteel `
+              --icon icon.ico `
+              --add-data "VERSION.txt;." `
+              --add-data "ui;ui" `
+              --add-data "dashboard;dashboard" `
+              --add-data "manual;manual" `
+              ui/main.py
+          }
+          # 산출물 확인
+          Get-ChildItem -Recurse -Filter JWSteel.exe | Select-Object FullName
+
+      - name: Set up Inno Setup
+        shell: pwsh
+        run: |
+          # Inno Setup 6 설치 (chocolatey)
+          choco install -y innosetup
+          # 경로 확인
+          $iscc = (Get-ChildItem "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" -ErrorAction SilentlyContinue).FullName
+          if (-not $iscc) {
+            $iscc = (Get-ChildItem "C:\Program Files\Inno Setup 6\ISCC.exe" -ErrorAction SilentlyContinue).FullName
+          }
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          echo "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Compile Inno Setup installer
+        shell: pwsh
+        run: |
+          & "$env:ISCC" installer.iss
+          # 결과 위치 확인 (installer.iss 의 OutputDir 기본은 Output\)
+          Get-ChildItem -Recurse -Filter "JWSteel_Setup_v*.exe" | Select-Object FullName
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JWSteel_Setup_v${{ steps.ver.outputs.version }}
+          path: |
+            **/JWSteel_Setup_v*.exe
+            !**/node_modules/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create draft release on jwsteel-release
+        if: |
+          startsWith(github.ref, 'refs/tags/v') ||
+          github.event.inputs.release_to_jwsteel_release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+        run: |
+          if (-not $env:GH_TOKEN) {
+            echo "::warning::GH_RELEASE_TOKEN secret 미설정 — 자동 릴리스 생략"
+            exit 0
+          }
+          $exe = (Get-ChildItem -Recurse -Filter "JWSteel_Setup_v*.exe" | Select-Object -First 1).FullName
+          $version = "${{ steps.ver.outputs.version }}"
+          $tag = "v$version"
+          $title = "JWSteel 통합전산 v$version"
+
+          # hanyeonsoo/jwsteel-release 에 릴리스 생성 + .exe 업로드
+          gh release create $tag $exe `
+            --repo hanyeonsoo/jwsteel-release `
+            --title $title `
+            --notes "자동 빌드: ${{ github.sha }}" `
+            --draft
