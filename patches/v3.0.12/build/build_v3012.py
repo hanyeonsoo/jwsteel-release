@@ -56,6 +56,12 @@ def main() -> int:
         # Where Analysis should look for modules referenced by main.py
         "--paths", cwd,
         "--paths", os.path.join(cwd, "ui"),
+        # PyQt6 WebEngine 은 dashboard_integrated.py 가 사용 - 명시 번들
+        "--collect-all", "PyQt6.QtWebEngineCore",
+        "--collect-all", "PyQt6.QtWebEngineWidgets",
+        "--hidden-import", "PyQt6.QtWebEngineCore",
+        "--hidden-import", "PyQt6.QtWebEngineWidgets",
+        "--hidden-import", "PyQt6.QtWebChannel",
     ]
     for d in add_data:
         args += ["--add-data", d]
