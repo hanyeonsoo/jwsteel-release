@@ -14,7 +14,7 @@ set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 set "HERE=%~dp0"
 if "!HERE:~-1!"=="\" set "HERE=!HERE:~0,-1!"
 
-REM ---- preflight (use goto, not if-blocks, to avoid paren-in-path parser bug) ----
+REM ---- preflight ----
 if not exist "!SRC_INSTALL!\JWSteel.exe" goto err_src
 if not exist "!ISCC!" goto err_iscc
 if not exist "!HERE!\installer.iss" goto err_iss
@@ -29,10 +29,11 @@ REM ---- 2. copy v3.0.11 install folder ----
 echo [2/5] Copying v3.0.11 install to dist\JWSteel\ ...
 xcopy "!SRC_INSTALL!\*" "!DIST!\" /E /I /Q /Y >nul
 
-REM exclude user data, settings, old uninstaller
+REM exclude only old uninstaller and user-specific config.
+REM Keep accounting.db: the v3.0.11 .exe ships an empty template DB
+REM and the app refuses to start without it.
 del "!DIST!\unins000.dat" 2>nul
 del "!DIST!\unins000.exe" 2>nul
-del "!DIST!\_internal\accounting.db" 2>nul
 del "!DIST!\_internal\config.json" 2>nul
 
 REM remove __pycache__
