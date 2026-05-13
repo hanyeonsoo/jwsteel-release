@@ -42,8 +42,7 @@ jobs:
 
           if (-not (Test-Path "C:\v311\_internal\ui\main.py")) {
             choco install -y innoextract --no-progress
-            $ie = (Get-Command innoextract -EA SilentlyContinue).Source
-            if (-not $ie) { $ie = "C:\ProgramData\chocolatey\bin\innoextract.exe" }
+            $ie = "C:\ProgramData\chocolatey\bin\innoextract.exe"
             if (Test-Path $ie) {
               & $ie -d C:\v311 $exe
               if (Test-Path "C:\v311\app\_internal\ui\main.py") {
@@ -52,19 +51,15 @@ jobs:
             }
           }
           if (-not (Test-Path "C:\v311\_internal\ui\main.py")) { throw "v3.0.11 source extraction FAILED" }
-          # Verify auth_module is in extracted source
-          if (-not (Test-Path "C:\v311\_internal\auth_module.py")) {
-            Write-Host "=== _internal contents ==="
-            Get-ChildItem C:\v311\_internal -Filter "*.py" | Select-Object Name
-            throw "auth_module.py missing from v3.0.11 source"
-          }
 
-      - name: Build source tree with v3.0.12 patches
+      - name: Build source tree with v3.0.12 patches + restored modules
         shell: pwsh
         run: |
           $work = "C:\work"
           New-Item -ItemType Directory -Path $work | Out-Null
           Copy-Item "C:\v311\_internal\*" $work -Recurse -Force
+
+          # Patched UI files (v3.0.12 changes)
           Copy-Item "patches\v3.0.12\ui\common.py"                   "$work\ui\common.py" -Force
           Copy-Item "patches\v3.0.12\ui\main.py"                     "$work\ui\main.py" -Force
           Copy-Item "patches\v3.0.12\ui\widgets\_filter_bar.py"      "$work\ui\widgets\_filter_bar.py" -Force
@@ -73,9 +68,28 @@ jobs:
           Copy-Item "patches\v3.0.12\ui\widgets\login.py"            "$work\ui\widgets\login.py" -Force
           Copy-Item "patches\v3.0.12\updater.py"                     "$work\updater.py" -Force
           Copy-Item "patches\v3.0.12\VERSION.txt"                    "$work\VERSION.txt" -Force
-          Copy-Item "patches\v3.0.12\build\build_v3012.py"           "$work\build_v3012.py" -Force
+
+          # Restored modules (v3.0.11 had these MyPyC-compiled; v3.0.0 sources used)
+          $restored = @("auth_module","backup_module","bank_module","collections_module",
+                        "excel_export","first_run_setup","invoice_pdf",
+                        "purchases_module","sales_module")
+          foreach ($m in $restored) {
+            $src = "patches\v3.0.12\$m.py"
+            if (-not (Test-Path $src)) { throw "Missing fallback module: $m.py" }
+            Copy-Item $src "$work\$m.py" -Force
+          }
+
+          Copy-Item "patches\v3.0.12\build\build_v3012.py" "$work\build_v3012.py" -Force
+
           Get-ChildItem $work -Filter "__pycache__" -Recurse -Directory | Remove-Item -Recurse -Force -EA SilentlyContinue
           Get-ChildItem $work -Filter "*.pyc" -Recurse | Remove-Item -Force -EA SilentlyContinue
+
+          # Verify required modules now present
+          $required = @("auth_module.py","db_adapter.py","permissions.py","updater.py",
+                        "inventory_module.py","sales_module.py","collections_module.py")
+          foreach ($r in $required) {
+            if (-not (Test-Path "$work\$r")) { throw "MISSING required module: $r" }
+          }
           if (-not (Select-String "_make_field_label" "$work\ui\widgets\login.py")) { throw "login.py patch missing" }
           Write-Host "=== Root .py files in C:\work ==="
           Get-ChildItem $work -Filter "*.py" -File | Select-Object Name | Format-Table -AutoSize
@@ -92,12 +106,13 @@ jobs:
         run: |
           python build_v3012.py
           if (-not (Test-Path "C:\work\dist\JWSteel\JWSteel.exe")) { throw "PyInstaller failed" }
-          if (-not (Test-Path "C:\work\dist\JWSteel\_internal\auth_module.py")) {
-            Write-Host "=== _internal/*.py in dist ==="
-            Get-ChildItem "C:\work\dist\JWSteel\_internal" -Filter "*.py" | Select-Object Name
-            throw "auth_module.py NOT bundled - build is broken"
+          $authBundled = (Get-ChildItem "C:\work\dist\JWSteel\_internal" -Filter "auth_module*" -Recurse).Count
+          if ($authBundled -eq 0) {
+            Write-Host "=== _internal contents ==="
+            Get-ChildItem "C:\work\dist\JWSteel\_internal" -Filter "*.py" -File | Select-Object Name
+            throw "auth_module NOT in bundle - build broken"
           }
-          Write-Host "auth_module.py verified in bundle"
+          Write-Host "auth_module verified: $authBundled file(s) in bundle"
 
       - name: Install Inno Setup
         shell: pwsh
