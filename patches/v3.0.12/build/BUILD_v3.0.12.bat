@@ -38,11 +38,14 @@ del "!DIST!\_internal\config.json" 2>nul
 REM remove __pycache__
 for /d /r "!DIST!" %%d in (__pycache__) do @if exist "%%d" rmdir /S /Q "%%d" 2>nul
 
-REM ---- 3. apply 5 v3.0.12 patches ----
-echo [3/5] Applying 5 v3.0.12 patches...
+REM ---- 3. apply v3.0.12 patches ----
+echo [3/5] Applying v3.0.12 patches...
+copy /Y "!HERE!\..\ui\common.py"                   "!DIST!\_internal\ui\common.py" >nul
+copy /Y "!HERE!\..\ui\main.py"                     "!DIST!\_internal\ui\main.py" >nul
 copy /Y "!HERE!\..\ui\widgets\_filter_bar.py"      "!DIST!\_internal\ui\widgets\_filter_bar.py" >nul
 copy /Y "!HERE!\..\ui\widgets\inventory.py"        "!DIST!\_internal\ui\widgets\inventory.py" >nul
 copy /Y "!HERE!\..\ui\widgets\inventory_picker.py" "!DIST!\_internal\ui\widgets\inventory_picker.py" >nul
+copy /Y "!HERE!\..\ui\widgets\login.py"            "!DIST!\_internal\ui\widgets\login.py" >nul
 copy /Y "!HERE!\..\updater.py"                     "!DIST!\_internal\updater.py" >nul
 copy /Y "!HERE!\..\VERSION.txt"                    "!DIST!\_internal\VERSION.txt" >nul
 
